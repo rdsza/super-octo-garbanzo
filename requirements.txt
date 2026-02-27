@@ -1,4 +1,4 @@
-napari>=0.7.0
+napari>=0.6.6
 qtpy
 pyqt5
 mrcfile
