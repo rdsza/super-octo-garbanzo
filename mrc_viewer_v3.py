@@ -5,6 +5,10 @@ import napari
 import concurrent.futures
 import os
 import time
+# logging for debugging
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 # Optional pyFFTW acceleration (best-effort)
 try:
     import pyfftw
@@ -166,15 +170,8 @@ def main():
     annot_layout.addWidget(clear_ann_btn)
     controls_layout.addWidget(annot_group)
 
-    # right viewer container
-    viewer_container = QWidget()
-    viewer_container.setMinimumSize(600, 400)
-    viewer_container_layout = QVBoxLayout()
-    viewer_container.setLayout(viewer_container_layout)
-
     # add panels to main layout (controls left, viewer right)
     layout.addWidget(controls_widget)
-    layout.addWidget(viewer_container)
 
     # area where the napari viewer widget will be embedded
     viewer = None
@@ -211,6 +208,7 @@ def main():
 
         label.setText(f'Selected File: {file_name}')
         current_file = file_name
+        logger.info('Opening MRC file: %s', file_name)
 
         try:
             # close any previously opened MRC if present
@@ -251,10 +249,12 @@ def main():
                 original_data = data
             else:
                 original_data = data.astype(np.float32)
+            logger.info('Loaded MRC data shape=%s dtype=%s', getattr(original_data, 'shape', None), getattr(original_data, 'dtype', None))
 
             fft_button.setEnabled(True)
             update_viewer()
         except Exception as e:
+            logger.exception('Failed to open MRC file')
             fft_button.setEnabled(False)
             msg = QMessageBox(window)
             msg.setIcon(QMessageBox.Critical)
@@ -269,6 +269,7 @@ def main():
         # Don't update if no data loaded yet
         if original_data is None:
             return
+        logger.debug('update_viewer called; data shape=%s', getattr(original_data, 'shape', None))
 
         # Create viewer if needed, otherwise reuse existing one and clear image layers
         if viewer is None:
@@ -281,11 +282,13 @@ def main():
             try:
                 qtwidget = viewer.window.qt_viewer
                 viewer_container_layout.addWidget(qtwidget)
+                logger.debug('Embedded napari viewer widget added to layout')
             except Exception:
                 # fallback: still usable but not embedded
                 pass
         else:
             # remove existing image layers (but keep other UI elements)
+            logger.debug('Reusing existing viewer; removing image layers')
             for layer in list(viewer.layers):
                 if isinstance(layer, napari.layers.Image):
                     viewer.layers.remove(layer)
@@ -302,6 +305,7 @@ def main():
         if data.ndim == 2:
             # simple 2D micrograph
             viewer.add_image(data, name='Original')
+            logger.info('Added Original image layer (2D)')
             try:
                 mode_label.setText('Mode: 2D micrograph')
             except Exception:
@@ -318,6 +322,7 @@ def main():
             else:
                 # show as 3D volume/stack
                 viewer.add_image(data, name='Original')
+                logger.info('Added Original image layer (3D volume/stack)')
                 try:
                     mode_label.setText('Mode: 3D Volume')
                 except Exception:
@@ -326,6 +331,7 @@ def main():
             # non-cubic stack (treat as 2D collection) — create a montage for 2D inspection
             montage = generate_projections(data)
             viewer.add_image(montage, name='Original')
+            logger.info('Added Original image layer (montage for stack)')
             try:
                 mode_label.setText('Mode: 2D stack (montage)')
             except Exception:
@@ -342,6 +348,7 @@ def main():
                 shapes_layer.mode = 'pan_zoom'
             except Exception:
                 shapes_layer = None
+        logger.debug('Shapes layer exists=%s, Points layer exists=%s', shapes_layer is not None, points_layer is not None)
         if points_layer is None:
             try:
                 points_layer = viewer.add_points(name='Points')
@@ -391,7 +398,9 @@ def main():
 
     def perform_fft():
         nonlocal viewer, fft_layer, original_data, fft_future, fft_cancel_event, fft_progress_state
+        logger.info('perform_fft invoked')
         if viewer is None:
+            logger.warning('perform_fft aborted: viewer is None')
             return
 
         # find an image layer to operate on (prefer named 'Original')
@@ -409,7 +418,9 @@ def main():
         if current_layer is None:
             return
 
+        logger.debug('Selected layer for FFT: %s', getattr(current_layer, 'name', None))
         image_data = np.array(current_layer.data)
+        logger.debug('Image data shape for FFT: %s dtype=%s', getattr(image_data, 'shape', None), getattr(image_data, 'dtype', None))
 
         def compute_fft(data, cancel_event, progress_state):
             # compute magnitude spectrum, log-scale, and normalize to float32
@@ -422,12 +433,14 @@ def main():
                     if cancel_event is not None and cancel_event.is_set():
                         raise RuntimeError('FFT cancelled')
                     arr = data[slice_idx]
+                    logger.debug('Starting FFT for slice %d', slice_idx)
                     # choose FFT implementation (respect UI toggle)
                     use_py = False
                     try:
                         use_py = use_pyfftw_cb.isChecked() and PYFFTW_AVAILABLE and pw_fft is not None
                     except Exception:
                         use_py = PYFFTW_AVAILABLE and pw_fft is not None
+                    logger.debug('pyFFTW available=%s use_py=%s', PYFFTW_AVAILABLE, use_py)
                     if use_py:
                         threads = PYFFTW_THREADS
                         try:
@@ -461,6 +474,7 @@ def main():
                         out[idx] = mag
                         completed += 1
                         progress_state['value'] = int(completed / zdim * 100)
+                        logger.debug('FFT progress: %d/%d (%d%%)', completed, zdim, progress_state['value'])
                 return out
             else:
                 if cancel_event is not None and cancel_event.is_set():
@@ -472,6 +486,7 @@ def main():
                     use_py = use_pyfftw_cb.isChecked() and PYFFTW_AVAILABLE and pw_fft is not None
                 except Exception:
                     use_py = PYFFTW_AVAILABLE and pw_fft is not None
+                logger.debug('pyFFTW available=%s use_py=%s', PYFFTW_AVAILABLE, use_py)
                 if use_py:
                     threads = PYFFTW_THREADS
                     try:
@@ -483,6 +498,7 @@ def main():
                     except TypeError:
                         fft_raw = pw_fft.fft2(data)
                 else:
+                    logger.debug('Using numpy FFT for 2D data')
                     fft_raw = np.fft.fft2(data)
                 fft_result = np.fft.fftshift(fft_raw)
                 mag = np.abs(fft_result)
@@ -495,13 +511,16 @@ def main():
         def on_fft_done(result):
             nonlocal fft_layer
             # update viewer on main thread
+            logger.info('FFT computation finished; updating viewer with FFT layer')
             if fft_layer is None:
                 fft_layer = viewer.add_image(result, name='FFT', visible=True)
                 current_layer.visible = False
+                logger.debug('FFT layer created; hid current layer %s', getattr(current_layer, 'name', None))
             else:
                 fft_layer.data = result
                 fft_layer.visible = True
                 current_layer.visible = False
+                logger.debug('FFT layer updated; hid current layer %s', getattr(current_layer, 'name', None))
 
         # if a previous compute is running, ignore or wait
         if fft_future is not None and not fft_future.done():
@@ -537,6 +556,7 @@ def main():
                 res = fut.result()
             except Exception as e:
                 # check for cancellation
+                logger.exception('FFT computation raised exception')
                 if isinstance(e, RuntimeError) and 'cancel' in str(e).lower():
                     QTimer.singleShot(0, lambda: label.setText('FFT cancelled'))
                 else:
@@ -546,6 +566,7 @@ def main():
                 QTimer.singleShot(0, lambda: fft_progress.setValue(0))
                 fft_cancel_event = None
                 return
+            logger.info('FFT future completed successfully, scheduling viewer update')
             QTimer.singleShot(0, lambda: on_fft_done(res))
             QTimer.singleShot(0, lambda: fft_button.setEnabled(True))
             QTimer.singleShot(0, lambda: fft_cancel_btn.setEnabled(False))
@@ -653,7 +674,9 @@ def main():
     
     def apply_filter():
         nonlocal viewer, filter_future
+        logger.info('apply_filter invoked')
         if viewer is None:
+            logger.warning('apply_filter aborted: viewer is None')
             return
 
         # find image layer
@@ -671,6 +694,7 @@ def main():
             return
 
         image = np.array(current_layer.data)
+        logger.debug('Selected layer for filtering: %s shape=%s', getattr(current_layer, 'name', None), getattr(image, 'shape', None))
         ftype = filter_type.currentText()
         low = float(cutoff_low.value())
         high = float(cutoff_high.value())
@@ -739,7 +763,7 @@ def main():
                                 new_layer = viewer.add_image(res, name='Filtered', colormap='gray')
                             else:
                                 new_layer = viewer.add_image(res, name='Filtered')
-                            if clim is not None:
+                                if clim is not None:
                                 try:
                                     new_layer.contrast_limits = clim
                                 except Exception:
@@ -754,6 +778,7 @@ def main():
                     else:
                         existing.data = res
                         new_layer = existing
+                        logger.debug('Updated existing Filtered layer data')
                         try:
                             if getattr(res, 'ndim', 2) == 2:
                                 existing.colormap = 'gray'
@@ -762,6 +787,7 @@ def main():
                         except Exception:
                             pass
 
+                    logger.info('Showing Filtered layer and hiding other image layers')
                     # Ensure visibility: show Filtered and hide other image layers
                     try:
                         for ly in viewer.layers:
@@ -838,7 +864,9 @@ def main():
 
     def run_preview():
         nonlocal preview_future
+        logger.debug('run_preview invoked')
         if viewer is None or not live_preview_cb.isChecked():
+            logger.debug('run_preview aborted: viewer is None or live preview disabled')
             return
 
         # find current image layer
@@ -848,9 +876,11 @@ def main():
                 current_layer = layer
                 break
         if current_layer is None:
+            logger.debug('run_preview: no current image layer found')
             return
 
         image_data = np.array(current_layer.data)
+        logger.debug('Preview using layer %s shape=%s', getattr(current_layer, 'name', None), getattr(image_data, 'shape', None))
         # pick current slice if 3D
         if getattr(image_data, 'ndim', 2) == 3:
             try:
@@ -866,6 +896,7 @@ def main():
         high = float(cutoff_high.value())
 
         # cancel previous preview if running (we can't kill it, but we'll ignore its result)
+        logger.debug('Submitting preview compute task')
         preview_future = executor.submit(compute_preview_slice, slice2d, ftype, low, high)
 
         def _done(fut):
@@ -875,6 +906,7 @@ def main():
                 return
             def _update():
                 # update or add a Preview layer for the current slice
+                logger.debug('Updating Preview layer with computed slice')
                 existing = None
                 for ly in viewer.layers:
                     if isinstance(ly, napari.layers.Image) and ly.name == 'Preview':

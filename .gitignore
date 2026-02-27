@@ -28,3 +28,6 @@ dist/
 # macOS
 .DS_Store
 
+# Dev notes
+dev.md
+
