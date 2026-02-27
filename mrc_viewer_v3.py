@@ -73,6 +73,9 @@ def main():
     projections_radio = QRadioButton('Projections')
     view_layout.addWidget(slices_radio)
     view_layout.addWidget(projections_radio)
+    mode_label = QLabel('Mode: N/A')
+    mode_label.setAlignment(Qt.AlignCenter)
+    view_layout.addWidget(mode_label)
     controls_layout.addWidget(view_group)
 
     # analysis group (FFT)
@@ -289,15 +292,44 @@ def main():
             fft_layer = None
 
         data = original_data
+        # Determine whether this is a true 3D volume (cubic NxNxN)
+        is_volume = False
+        if getattr(data, 'ndim', None) == 3:
+            s0, s1, s2 = data.shape
+            if s0 == s1 == s2:
+                is_volume = True
+
         if data.ndim == 2:
+            # simple 2D micrograph
             viewer.add_image(data, name='Original')
-        elif data.ndim == 3:
+            try:
+                mode_label.setText('Mode: 2D micrograph')
+            except Exception:
+                pass
+        elif data.ndim == 3 and is_volume:
+            # true 3D cubic volume
             if projections_radio.isChecked():
                 projections = generate_projections(data)
                 viewer.add_image(projections, name='Projections')
+                try:
+                    mode_label.setText('Mode: Volume (projections)')
+                except Exception:
+                    pass
             else:
-                # show as stack (napari will pick sensible display)
+                # show as 3D volume/stack
                 viewer.add_image(data, name='Original')
+                try:
+                    mode_label.setText('Mode: 3D Volume')
+                except Exception:
+                    pass
+        elif data.ndim == 3 and not is_volume:
+            # non-cubic stack (treat as 2D collection) — create a montage for 2D inspection
+            montage = generate_projections(data)
+            viewer.add_image(montage, name='Original')
+            try:
+                mode_label.setText('Mode: 2D stack (montage)')
+            except Exception:
+                pass
         else:
             label.setText('Error: MRC file must be 2D or 3D.')
             return
@@ -697,10 +729,38 @@ def main():
                             existing = ly
                             break
                     if existing is None:
-                        new_layer = viewer.add_image(res, name='Filtered')
+                        # set sensible display kwargs for 2D micrographs
+                        try:
+                            clim = (float(np.nanmin(res)), float(np.nanmax(res)))
+                        except Exception:
+                            clim = None
+                        try:
+                            if getattr(res, 'ndim', 2) == 2:
+                                new_layer = viewer.add_image(res, name='Filtered', colormap='gray')
+                            else:
+                                new_layer = viewer.add_image(res, name='Filtered')
+                            if clim is not None:
+                                try:
+                                    new_layer.contrast_limits = clim
+                                except Exception:
+                                    pass
+                            try:
+                                new_layer.opacity = 1.0
+                            except Exception:
+                                pass
+                        except Exception:
+                            # fallback simple add
+                            new_layer = viewer.add_image(res, name='Filtered')
                     else:
                         existing.data = res
                         new_layer = existing
+                        try:
+                            if getattr(res, 'ndim', 2) == 2:
+                                existing.colormap = 'gray'
+                                existing.opacity = 1.0
+                                existing.contrast_limits = (float(np.nanmin(res)), float(np.nanmax(res)))
+                        except Exception:
+                            pass
 
                     # Ensure visibility: show Filtered and hide other image layers
                     try:
