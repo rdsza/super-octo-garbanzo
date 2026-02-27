@@ -1,0 +1,5 @@
+napari
+qtpy
+pyqt5
+mrcfile
+numpy
