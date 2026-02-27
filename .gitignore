@@ -1,1 +1,33 @@
 archive/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# pytest
+.pytest_cache/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Byte-compiled / caches
+*.pyc
+
+# macOS
+.DS_Store
+
+# Dev notes
+dev.md
+
