@@ -4,12 +4,12 @@ import mrcfile
 import napari
 import concurrent.futures
 import os
+import time
 # Optional pyFFTW acceleration (best-effort)
 try:
     import pyfftw
     from pyfftw.interfaces import numpy_fft as pw_fft
     try:
-import time
         pw_fft.cache.enable()
     except Exception:
         pass
@@ -316,6 +316,20 @@ def main():
                 points_layer.mode = 'pan_zoom'
             except Exception:
                 points_layer = None
+        # connect viewer dims change to live preview scheduler (only once)
+        try:
+            if not getattr(viewer, '_preview_connected', False):
+                try:
+                    viewer.dims.events.current_step.connect(lambda e: schedule_preview())
+                except Exception:
+                    # fallback: older napari API
+                    try:
+                        viewer.dims.events.connect(lambda e: schedule_preview())
+                    except Exception:
+                        pass
+                viewer._preview_connected = True
+        except Exception:
+            pass
 
     def generate_projections(volume):
         """
@@ -675,17 +689,40 @@ def main():
                 return
             def _update():
                 nonlocal viewer
-                existing = None
-                for ly in viewer.layers:
-                    if isinstance(ly, napari.layers.Image) and ly.name == 'Filtered':
-                        existing = ly
-                        break
-                if existing is None:
-                    viewer.add_image(res, name='Filtered')
-                else:
-                    existing.data = res
-                apply_filter_btn.setEnabled(True)
-                filter_progress.setValue(100)
+                try:
+                    # find or create the Filtered layer
+                    existing = None
+                    for ly in viewer.layers:
+                        if isinstance(ly, napari.layers.Image) and ly.name == 'Filtered':
+                            existing = ly
+                            break
+                    if existing is None:
+                        new_layer = viewer.add_image(res, name='Filtered')
+                    else:
+                        existing.data = res
+                        new_layer = existing
+
+                    # Ensure visibility: show Filtered and hide other image layers
+                    try:
+                        for ly in viewer.layers:
+                            if isinstance(ly, napari.layers.Image):
+                                if ly is new_layer:
+                                    ly.visible = True
+                                else:
+                                    try:
+                                        ly.visible = False
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                    # mark progress and re-enable button
+                    apply_filter_btn.setEnabled(True)
+                    filter_progress.setValue(100)
+                except Exception as e:
+                    QMessageBox.critical(window, 'Update error', f'Failed to update Filtered layer: {e}')
+                    apply_filter_btn.setEnabled(True)
+                    filter_progress.setValue(0)
             QTimer.singleShot(0, _update)
 
         filter_future.add_done_callback(_done)
@@ -699,7 +736,15 @@ def main():
         for ly in list(viewer.layers):
             if isinstance(ly, napari.layers.Image) and ly.name == 'Filtered':
                 viewer.layers.remove(ly)
+        # also remove preview overlay and reset controls
+        for ly in list(viewer.layers):
+            if isinstance(ly, napari.layers.Image) and ly.name == 'Preview':
+                try:
+                    viewer.layers.remove(ly)
+                except Exception:
+                    pass
         filter_progress.setValue(0)
+        apply_filter_btn.setEnabled(True)
 
     reset_filter_btn.clicked.connect(reset_filter)
 
@@ -785,10 +830,21 @@ def main():
         preview_future.add_done_callback(_done)
 
     # wire live-preview controls
-    live_preview_cb.toggled.connect(lambda v: (None if v else [
-        # remove Preview layer when disabling
-        (viewer.layers.remove(ly) if (isinstance(ly, napari.layers.Image) and ly.name == 'Preview') else None) for ly in list(viewer.layers)
-    ]))
+    def on_live_preview_toggled(enabled):
+        if not enabled:
+            # remove Preview layer when disabling
+            if viewer is not None:
+                for ly in list(viewer.layers):
+                    if isinstance(ly, napari.layers.Image) and ly.name == 'Preview':
+                        try:
+                            viewer.layers.remove(ly)
+                        except Exception:
+                            pass
+        else:
+            # schedule an immediate preview when enabling
+            schedule_preview()
+
+    live_preview_cb.toggled.connect(on_live_preview_toggled)
     filter_type.currentIndexChanged.connect(lambda _: schedule_preview())
     cutoff_low.valueChanged.connect(lambda _: schedule_preview())
     cutoff_high.valueChanged.connect(lambda _: schedule_preview())
