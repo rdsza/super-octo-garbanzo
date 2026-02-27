@@ -1,5 +1,11 @@
-napari
+napari>=0.7.0
 qtpy
 pyqt5
 mrcfile
 numpy
+scipy
+# Optional acceleration (install to speed up FFTs)
+pyfftw
+
+# Testing
+pytest
